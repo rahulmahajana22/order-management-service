@@ -63,7 +63,7 @@ The system is designed for **scalability, security, maintainability**, and **com
 │     (Order, Customer, Product with JPA annotations)          │
 ├─────────────────────────────────────────────────────────────┤
 │                    Persistence Layer                         │
-│         (H2 In-Memory DB, HikariCP Connection Pool)          │
+│         (H2 File-Based DB, HikariCP Connection Pool)         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -1315,53 +1315,62 @@ Signature: (HMAC HS256 with server secret)
 ### Schema Architecture
 
 ```
-┌─────────────┐         ┌──────────────┐
-│   USERS     │         │  CUSTOMERS   │
-├─────────────┤         ├──────────────┤
-│ id (PK)     │         │ id (PK)      │
-│ username    │         │ name         │
-│ email       │         │ email        │
-│ password    │         │ phone        │
-│ role        │         │ created_at   │
-│ created_at  │         │ created_by   │
-│ created_by  │         └──────────────┘
-└─────────────┘
-                ┌──────────────┐
-                │  PRODUCTS    │
-                ├──────────────┤
-                │ id (PK)      │
-                │ name         │
-                │ description  │
-                │ price        │
-                │ created_at   │
-                └──────────────┘
-                        ▲
-                        │
-     ┌──────────────────┼──────────────────┐
-     │                  │                  │
-┌────────────┐  ┌──────────────┐  ┌─────────────┐
-│   ORDERS   │  │  ORDER_ITEMS │  │ ORDERS_AUD  │
-├────────────┤  ├──────────────┤  ├─────────────┤
-│ id (PK)    │  │ id (PK)      │  │ id          │
-│ customer   │  │ order_id (FK)│  │ rev (PK)    │
-│ status     │  │ product_id FK│  │ order_id (FK
-│ total_amt  │  │ quantity     │  │ status      │
-│ created_at │  │ unit_price   │  │ revtype     │
-│ created_by │  │ subtotal     │  │ timestamp   │
-│ modified_at│  └──────────────┘  └─────────────┘
-│ modified_by│   (Order Items)      (Envers Audit)
-└────────────┘
- (Audited)
+┌─────────────────┐        ┌──────────────────┐
+│      USERS      │        │    CUSTOMERS     │
+├─────────────────┤        ├──────────────────┤
+│ id (PK)         │        │ id (PK)          │
+│ username        │        │ name             │
+│ email           │        │ email            │
+│ password        │        │ phone            │
+│ role            │        │ created_at       │
+│ created_at      │        │ updated_at       │
+│ updated_at      │        └──────────────────┘
+└─────────────────┘
+                  ┌──────────────────┐
+                  │    PRODUCTS      │
+                  ├──────────────────┤
+                  │ id (PK)          │
+                  │ name             │
+                  │ description      │
+                  │ price            │
+                  │ created_at       │
+                  │ updated_at       │
+                  └──────────────────┘
+                          ▲
+                          │
+       ┌──────────────────┼──────────────────┐
+       │                  │                  │
+┌──────────────┐  ┌──────────────┐  ┌────────────────┐
+│    ORDERS    │  │ ORDER_ITEMS  │  │  ORDERS_AUD    │
+├──────────────┤  ├──────────────┤  ├────────────────┤
+│ id (PK)      │  │ id (PK)      │  │ id             │
+│ customer_id  │  │ order_id (FK)│  │ rev (FK)       │
+│ status       │  │ product_id   │  │ revtype        │
+│ total_amount │  │   (FK)       │  │ customer_id    │
+│ created_at   │  │ quantity     │  │ status         │
+│ created_by   │  │ unit_price   │  │ total_amount   │
+│ updated_at   │  │ created_at   │  │ created_at     │
+│ last_mod_by  │  └──────────────┘  │ created_by     │
+└──────────────┘   (immutable)      │ updated_at     │
+ (Audited)                          │ last_mod_by    │
+                                    └────────────────┘
+                  ┌──────────────────────────┐
+                  │         REVINFO          │
+                  ├──────────────────────────┤
+                  │ rev (PK)                 │
+                  │ revtstmp (epoch ms)      │
+                  └──────────────────────────┘
+                         (Envers meta)
 ```
 
 ### Key Characteristics
 
 | Aspect | Implementation |
 |--------|-----------------|
-| **Database** | H2 (in-memory, file-based on production) |
+| **Database** | H2 file-based dev (switchable to PostgreSQL/MySQL) |
 | **Dialect** | H2Dialect with JDBC 4.2 support |
-| **DDL Strategy** | `ddl-auto=none` (schema.sql on startup) |
-| **Initialization** | `spring.sql.init.mode=always` (data.sql) |
+| **DDL Strategy** | `ddl-auto=update` (Hibernate auto-migrates schema) |
+| **Initialization** | `spring.sql.init.mode=embedded` (idempotent data.sql on H2) |
 | **Connection Pool** | HikariCP with optimized defaults |
 | **Lazy Loading** | FetchType.LAZY on all @ManyToOne/@OneToMany |
 | **Auditing** | Hibernate Envers for complete revision history |
@@ -1371,10 +1380,10 @@ Signature: (HMAC HS256 with server secret)
 
 ### H2 Console Access
 ```
-URL: http://localhost:8080/h2-console
-JDBC URL: jdbc:h2:mem:orderdb
-User: sa
-Password: (blank)
+URL:      http://localhost:8080/h2-console
+JDBC URL: jdbc:h2:./data/orderdb
+User:     (value of H2_DB_USERNAME env var)
+Password: (value of H2_DB_PASSWORD env var)
 ```
 
 ---

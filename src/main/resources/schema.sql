@@ -9,37 +9,43 @@ DROP TABLE IF EXISTS users;
 
 -- ─── Auth ─────────────────────────────────────────────────────────────────────
 CREATE TABLE users (
-    id       BIGINT AUTO_INCREMENT PRIMARY KEY,
-    username VARCHAR(50)  NOT NULL UNIQUE,
-    password VARCHAR(255) NOT NULL,
-    email    VARCHAR(255) NOT NULL UNIQUE,
-    role     VARCHAR(20)  NOT NULL
+    id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+    username   VARCHAR(50)  NOT NULL UNIQUE,
+    password   VARCHAR(255) NOT NULL,
+    email      VARCHAR(255) NOT NULL UNIQUE,
+    role       VARCHAR(20)  NOT NULL,
+    created_at TIMESTAMP    NOT NULL,
+    updated_at TIMESTAMP    NOT NULL
 );
 
 -- ─── Business domain ──────────────────────────────────────────────────────────
 CREATE TABLE customers (
-    id    BIGINT AUTO_INCREMENT PRIMARY KEY,
-    name  VARCHAR(255) NOT NULL,
-    email VARCHAR(255) NOT NULL,
-    phone VARCHAR(50)
+    id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name       VARCHAR(255) NOT NULL,
+    email      VARCHAR(255) NOT NULL,
+    phone      VARCHAR(50),
+    created_at TIMESTAMP    NOT NULL,
+    updated_at TIMESTAMP    NOT NULL
 );
 
 CREATE TABLE products (
     id          BIGINT AUTO_INCREMENT PRIMARY KEY,
     name        VARCHAR(255)   NOT NULL,
     description VARCHAR(1000),
-    price       DECIMAL(10, 2) NOT NULL
+    price       DECIMAL(10, 2) NOT NULL,
+    created_at  TIMESTAMP      NOT NULL,
+    updated_at  TIMESTAMP      NOT NULL
 );
 
 CREATE TABLE orders (
-    id                 BIGINT AUTO_INCREMENT PRIMARY KEY,
-    customer_id        BIGINT         NOT NULL,
-    status             VARCHAR(50)    NOT NULL,
-    total_amount       DECIMAL(10, 2) NOT NULL,
-    created_at         TIMESTAMP      NOT NULL,
-    created_by         VARCHAR(50),
-    last_modified_by   VARCHAR(50),
-    last_modified_date TIMESTAMP,
+    id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+    customer_id      BIGINT         NOT NULL,
+    status           VARCHAR(50)    NOT NULL,
+    total_amount     DECIMAL(10, 2) NOT NULL,
+    created_at       TIMESTAMP      NOT NULL,
+    created_by       VARCHAR(50),
+    last_modified_by VARCHAR(50),
+    updated_at       TIMESTAMP,
     FOREIGN KEY (customer_id) REFERENCES customers (id)
 );
 
@@ -49,6 +55,7 @@ CREATE TABLE order_items (
     product_id BIGINT         NOT NULL,
     quantity   INT            NOT NULL,
     unit_price DECIMAL(10, 2) NOT NULL,
+    created_at TIMESTAMP      NOT NULL,
     FOREIGN KEY (order_id)   REFERENCES orders (id),
     FOREIGN KEY (product_id) REFERENCES products (id)
 );
@@ -62,16 +69,16 @@ CREATE TABLE REVINFO (
 
 -- Full change history for the orders table
 CREATE TABLE orders_aud (
-    id                 BIGINT         NOT NULL,
-    REV                INT            NOT NULL,
-    REVTYPE            TINYINT,
-    customer_id        BIGINT,
-    status             VARCHAR(50),
-    total_amount       DECIMAL(10, 2),
-    created_at         TIMESTAMP,
-    created_by         VARCHAR(50),
-    last_modified_by   VARCHAR(50),
-    last_modified_date TIMESTAMP,
+    id               BIGINT         NOT NULL,
+    REV              INT            NOT NULL,
+    REVTYPE          TINYINT,
+    customer_id      BIGINT,
+    status           VARCHAR(50),
+    total_amount     DECIMAL(10, 2),
+    created_at       TIMESTAMP,
+    created_by       VARCHAR(50),
+    last_modified_by VARCHAR(50),
+    updated_at       TIMESTAMP,
     PRIMARY KEY (id, REV),
     FOREIGN KEY (REV) REFERENCES REVINFO (REV)
 );
