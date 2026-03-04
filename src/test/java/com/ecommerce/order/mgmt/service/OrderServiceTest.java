@@ -1,0 +1,259 @@
+package com.ecommerce.order.mgmt.service;
+
+import com.ecommerce.order.mgmt.dto.request.CreateOrderRequest;
+import com.ecommerce.order.mgmt.dto.request.OrderItemRequest;
+import com.ecommerce.order.mgmt.dto.request.UpdateStatusRequest;
+import com.ecommerce.order.mgmt.dto.response.OrderResponse;
+import com.ecommerce.order.mgmt.entity.Customer;
+import com.ecommerce.order.mgmt.entity.Order;
+import com.ecommerce.order.mgmt.entity.OrderItem;
+import com.ecommerce.order.mgmt.entity.Product;
+import com.ecommerce.order.mgmt.enums.OrderStatus;
+import com.ecommerce.order.mgmt.exception.BusinessException;
+import com.ecommerce.order.mgmt.exception.ResourceNotFoundException;
+import com.ecommerce.order.mgmt.repository.CustomerRepository;
+import com.ecommerce.order.mgmt.repository.OrderRepository;
+import com.ecommerce.order.mgmt.repository.ProductRepository;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class OrderServiceTest {
+
+    @Mock private OrderRepository orderRepository;
+    @Mock private CustomerRepository customerRepository;
+    @Mock private ProductRepository productRepository;
+
+    @InjectMocks
+    private OrderService orderService;
+
+    private Customer customer;
+    private Product product;
+    private Order pendingOrder;
+
+    @BeforeEach
+    void setUp() {
+        customer = Customer.builder()
+                .id(1L).name("John Doe").email("john@example.com").phone("555-0101")
+                .build();
+
+        product = Product.builder()
+                .id(1L).name("Laptop Stand").description("Adjustable stand").price(new BigDecimal("49.99"))
+                .build();
+
+        pendingOrder = Order.builder()
+                .id(1L).customer(customer).status(OrderStatus.PENDING)
+                .totalAmount(new BigDecimal("49.99")).createdAt(LocalDateTime.now())
+                .items(new ArrayList<>(List.of(
+                        OrderItem.builder().id(1L).product(product).quantity(1)
+                                .unitPrice(new BigDecimal("49.99")).build()
+                )))
+                .build();
+    }
+
+    // ─── createOrder ────────────────────────────────────────────────────────────
+
+    @Test
+    void createOrder_success() {
+        CreateOrderRequest request = new CreateOrderRequest(1L,
+                List.of(new OrderItemRequest(1L, 2)));
+
+        when(customerRepository.findById(1L)).thenReturn(Optional.of(customer));
+        when(productRepository.findById(1L)).thenReturn(Optional.of(product));
+        when(orderRepository.save(any(Order.class))).thenAnswer(inv -> {
+            Order o = inv.getArgument(0);
+            o.setId(1L);
+            o.setCreatedAt(LocalDateTime.now());
+            return o;
+        });
+
+        OrderResponse response = orderService.createOrder(request);
+
+        assertThat(response.status()).isEqualTo(OrderStatus.PENDING);
+        assertThat(response.totalAmount()).isEqualByComparingTo("99.98");
+        assertThat(response.items()).hasSize(1);
+        verify(orderRepository).save(any(Order.class));
+    }
+
+    @Test
+    void createOrder_customerNotFound_throwsResourceNotFoundException() {
+        when(customerRepository.findById(99L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() ->
+                orderService.createOrder(new CreateOrderRequest(99L, List.of(new OrderItemRequest(1L, 1))))
+        ).isInstanceOf(ResourceNotFoundException.class)
+                .hasMessageContaining("Customer");
+    }
+
+    @Test
+    void createOrder_productNotFound_throwsResourceNotFoundException() {
+        when(customerRepository.findById(1L)).thenReturn(Optional.of(customer));
+        when(productRepository.findById(99L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() ->
+                orderService.createOrder(new CreateOrderRequest(1L, List.of(new OrderItemRequest(99L, 1))))
+        ).isInstanceOf(ResourceNotFoundException.class)
+                .hasMessageContaining("Product");
+    }
+
+    // ─── getOrder ───────────────────────────────────────────────────────────────
+
+    @Test
+    void getOrder_success() {
+        when(orderRepository.findById(1L)).thenReturn(Optional.of(pendingOrder));
+
+        OrderResponse response = orderService.getOrder(1L);
+
+        assertThat(response.id()).isEqualTo(1L);
+        assertThat(response.status()).isEqualTo(OrderStatus.PENDING);
+        assertThat(response.customerName()).isEqualTo("John Doe");
+    }
+
+    @Test
+    void getOrder_notFound_throwsResourceNotFoundException() {
+        when(orderRepository.findById(99L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> orderService.getOrder(99L))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessageContaining("Order");
+    }
+
+    // ─── listOrders ─────────────────────────────────────────────────────────────
+
+    @Test
+    void listOrders_noFilter_returnsAll() {
+        when(orderRepository.findAll()).thenReturn(List.of(pendingOrder));
+
+        List<OrderResponse> responses = orderService.listOrders(null);
+
+        assertThat(responses).hasSize(1);
+        verify(orderRepository).findAll();
+        verify(orderRepository, never()).findByStatus(any());
+    }
+
+    @Test
+    void listOrders_withStatusFilter_returnsFiltered() {
+        when(orderRepository.findByStatus(OrderStatus.PENDING)).thenReturn(List.of(pendingOrder));
+
+        List<OrderResponse> responses = orderService.listOrders(OrderStatus.PENDING);
+
+        assertThat(responses).hasSize(1);
+        assertThat(responses.get(0).status()).isEqualTo(OrderStatus.PENDING);
+        verify(orderRepository).findByStatus(OrderStatus.PENDING);
+        verify(orderRepository, never()).findAll();
+    }
+
+    // ─── updateStatus ───────────────────────────────────────────────────────────
+
+    @Test
+    void updateStatus_pendingToProcessing_success() {
+        when(orderRepository.findById(1L)).thenReturn(Optional.of(pendingOrder));
+        when(orderRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        OrderResponse response = orderService.updateStatus(1L, new UpdateStatusRequest(OrderStatus.PROCESSING));
+
+        assertThat(response.status()).isEqualTo(OrderStatus.PROCESSING);
+    }
+
+    @Test
+    void updateStatus_processingToShipped_success() {
+        pendingOrder.setStatus(OrderStatus.PROCESSING);
+        when(orderRepository.findById(1L)).thenReturn(Optional.of(pendingOrder));
+        when(orderRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        OrderResponse response = orderService.updateStatus(1L, new UpdateStatusRequest(OrderStatus.SHIPPED));
+
+        assertThat(response.status()).isEqualTo(OrderStatus.SHIPPED);
+    }
+
+    @Test
+    void updateStatus_shippedToDelivered_success() {
+        pendingOrder.setStatus(OrderStatus.SHIPPED);
+        when(orderRepository.findById(1L)).thenReturn(Optional.of(pendingOrder));
+        when(orderRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        OrderResponse response = orderService.updateStatus(1L, new UpdateStatusRequest(OrderStatus.DELIVERED));
+
+        assertThat(response.status()).isEqualTo(OrderStatus.DELIVERED);
+    }
+
+    @Test
+    void updateStatus_invalidTransition_throwsBusinessException() {
+        // PENDING cannot jump to SHIPPED (skipping PROCESSING)
+        when(orderRepository.findById(1L)).thenReturn(Optional.of(pendingOrder));
+
+        assertThatThrownBy(() ->
+                orderService.updateStatus(1L, new UpdateStatusRequest(OrderStatus.SHIPPED))
+        ).isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Invalid status transition");
+    }
+
+    @Test
+    void updateStatus_toCancelled_delegatesToCancelOrder() {
+        when(orderRepository.findById(1L)).thenReturn(Optional.of(pendingOrder));
+        when(orderRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        OrderResponse response = orderService.updateStatus(1L, new UpdateStatusRequest(OrderStatus.CANCELLED));
+
+        assertThat(response.status()).isEqualTo(OrderStatus.CANCELLED);
+    }
+
+    @Test
+    void updateStatus_cannotSetToPending_throwsBusinessException() {
+        pendingOrder.setStatus(OrderStatus.PROCESSING);
+        when(orderRepository.findById(1L)).thenReturn(Optional.of(pendingOrder));
+
+        assertThatThrownBy(() ->
+                orderService.updateStatus(1L, new UpdateStatusRequest(OrderStatus.PENDING))
+        ).isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Cannot manually set status to");
+    }
+
+    // ─── cancelOrder ────────────────────────────────────────────────────────────
+
+    @Test
+    void cancelOrder_pendingOrder_success() {
+        when(orderRepository.findById(1L)).thenReturn(Optional.of(pendingOrder));
+        when(orderRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        OrderResponse response = orderService.cancelOrder(1L);
+
+        assertThat(response.status()).isEqualTo(OrderStatus.CANCELLED);
+        verify(orderRepository).save(pendingOrder);
+    }
+
+    @Test
+    void cancelOrder_processingOrder_throwsBusinessException() {
+        pendingOrder.setStatus(OrderStatus.PROCESSING);
+        when(orderRepository.findById(1L)).thenReturn(Optional.of(pendingOrder));
+
+        assertThatThrownBy(() -> orderService.cancelOrder(1L))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Only PENDING orders can be cancelled");
+    }
+
+    @Test
+    void cancelOrder_deliveredOrder_throwsBusinessException() {
+        pendingOrder.setStatus(OrderStatus.DELIVERED);
+        when(orderRepository.findById(1L)).thenReturn(Optional.of(pendingOrder));
+
+        assertThatThrownBy(() -> orderService.cancelOrder(1L))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Only PENDING orders can be cancelled");
+    }
+}
