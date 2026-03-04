@@ -86,6 +86,7 @@ public class AuthController {
             customerRepository.save(Customer.builder()
                     .name(request.username())
                     .email(request.email())
+                    .phone("N/A")
                     .build());
         }
 

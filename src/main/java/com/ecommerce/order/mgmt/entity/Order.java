@@ -56,7 +56,7 @@ public class Order {
     private String lastModifiedBy;
 
     @LastModifiedDate
-    private LocalDateTime lastModifiedDate;
+    private LocalDateTime updatedAt;
 
     // Items are immutable after creation — exclude from audit trail to avoid extra audit tables
     @NotAudited
