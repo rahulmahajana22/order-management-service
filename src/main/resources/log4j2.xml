@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+
+    <Properties>
+        <Property name="LOG_DIR">./logs</Property>
+        <Property name="LOG_FILE">order-management</Property>
+        <Property name="LOG_PATTERN">%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</Property>
+    </Properties>
+
+    <Appenders>
+
+        <!-- Console Appender -->
+        <Console name="Console" target="SYSTEM_OUT">
+            <PatternLayout pattern="${LOG_PATTERN}"/>
+        </Console>
+
+        <!-- Rolling File Appender: daily roll + 10MB size, GZIP compressed, 30-day retention, 1GB cap -->
+        <RollingFile name="RollingFile"
+                     fileName="${LOG_DIR}/${LOG_FILE}.log"
+                     filePattern="${LOG_DIR}/${LOG_FILE}-%d{yyyy-MM-dd}-%i.log.gz">
+            <PatternLayout pattern="${LOG_PATTERN}"/>
+            <Policies>
+                <!-- Roll daily (interval=1 matches the %d{yyyy-MM-dd} in filePattern) -->
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <!-- Also roll when current file exceeds 10 MB -->
+                <SizeBasedTriggeringPolicy size="10MB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="30">
+                <Delete basePath="${LOG_DIR}" maxDepth="1">
+                    <IfFileName glob="${LOG_FILE}-*.log.gz"/>
+                    <IfLastModified age="30d"/>
+                    <IfAccumulatedFileSize exceeds="1GB"/>
+                </Delete>
+            </DefaultRolloverStrategy>
+        </RollingFile>
+
+    </Appenders>
+
+    <Loggers>
+
+        <!-- Application code at DEBUG — both appenders -->
+        <Logger name="com.ecommerce.order.mgmt" level="DEBUG" additivity="false">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="RollingFile"/>
+        </Logger>
+
+        <!-- Spring framework at INFO to reduce noise -->
+        <Logger name="org.springframework" level="INFO" additivity="false">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="RollingFile"/>
+        </Logger>
+
+        <!-- Hibernate SQL (controlled by spring.jpa.show-sql) — console only to avoid noisy log files -->
+        <Logger name="org.hibernate.SQL" level="DEBUG" additivity="false">
+            <AppenderRef ref="Console"/>
+        </Logger>
+
+        <!-- Hibernate parameter binding -->
+        <Logger name="org.hibernate.orm.jdbc.bind" level="TRACE" additivity="false">
+            <AppenderRef ref="Console"/>
+        </Logger>
+
+        <!-- Root logger — everything else at INFO -->
+        <Root level="INFO">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="RollingFile"/>
+        </Root>
+
+    </Loggers>
+
+</Configuration>

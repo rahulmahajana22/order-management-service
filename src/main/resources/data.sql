@@ -1,3 +1,5 @@
+-- Note: seed users are created by DataInitializer at startup (BCrypt-encoded passwords)
+
 INSERT INTO customers (name, email, phone) VALUES
     ('John Doe',    'john@example.com',  '555-0101'),
     ('Jane Smith',  'jane@example.com',  '555-0102'),

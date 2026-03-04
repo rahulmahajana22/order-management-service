@@ -1,8 +1,10 @@
 package com.ecommerce.order.mgmt.exception;
 
+import io.github.resilience4j.ratelimiter.RequestNotPermitted;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -44,6 +46,17 @@ public class GlobalExceptionHandler {
         body.put("path", req.getRequestURI());
 
         return ResponseEntity.badRequest().body(body);
+    }
+
+    @ExceptionHandler(RequestNotPermitted.class)
+    public ResponseEntity<ErrorResponse> handleRateLimit(RequestNotPermitted ex, HttpServletRequest req) {
+        return build(HttpStatus.TOO_MANY_REQUESTS, "Too many requests — please slow down", req.getRequestURI());
+    }
+
+    // BadCredentialsException must be declared before the generic Exception handler
+    @ExceptionHandler(BadCredentialsException.class)
+    public ResponseEntity<ErrorResponse> handleBadCredentials(BadCredentialsException ex, HttpServletRequest req) {
+        return build(HttpStatus.UNAUTHORIZED, "Invalid username or password", req.getRequestURI());
     }
 
     @ExceptionHandler(Exception.class)

@@ -1,5 +1,6 @@
 package com.ecommerce.order.mgmt.controller;
 
+import com.ecommerce.order.mgmt.config.SecurityConfig;
 import com.ecommerce.order.mgmt.dto.request.CreateOrderRequest;
 import com.ecommerce.order.mgmt.dto.request.OrderItemRequest;
 import com.ecommerce.order.mgmt.dto.request.UpdateStatusRequest;
@@ -9,15 +10,20 @@ import com.ecommerce.order.mgmt.enums.OrderStatus;
 import com.ecommerce.order.mgmt.exception.BusinessException;
 import com.ecommerce.order.mgmt.exception.GlobalExceptionHandler;
 import com.ecommerce.order.mgmt.exception.ResourceNotFoundException;
+import com.ecommerce.order.mgmt.security.CustomUserDetailsService;
+import com.ecommerce.order.mgmt.security.JwtService;
 import com.ecommerce.order.mgmt.service.OrderService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.MediaType;
+import org.springframework.security.test.context.support.WithMockUser;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
@@ -31,12 +37,15 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(OrderController.class)
-@Import(GlobalExceptionHandler.class)
+@Import({GlobalExceptionHandler.class, SecurityConfig.class})
+@WithMockUser(roles = "ADMIN")
 class OrderControllerTest {
 
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
-    @MockBean  OrderService orderService;
+    @MockitoBean OrderService orderService;
+    @MockitoBean JwtService jwtService;
+    @MockitoBean CustomUserDetailsService userDetailsService;
 
     private OrderResponse sampleResponse;
 
@@ -148,31 +157,34 @@ class OrderControllerTest {
     // ─── GET /api/orders ────────────────────────────────────────────────────────
 
     @Test
-    void listOrders_noFilter_returns200WithList() throws Exception {
-        when(orderService.listOrders(null)).thenReturn(List.of(sampleResponse));
+    void listOrders_noFilter_returns200WithPage() throws Exception {
+        when(orderService.listOrders(eq(null), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(sampleResponse)));
 
         mockMvc.perform(get("/api/orders"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$").isArray())
-                .andExpect(jsonPath("$.length()").value(1));
+                .andExpect(jsonPath("$.content").isArray())
+                .andExpect(jsonPath("$.totalElements").value(1));
     }
 
     @Test
     void listOrders_withStatusFilter_returnsFiltered() throws Exception {
-        when(orderService.listOrders(OrderStatus.PENDING)).thenReturn(List.of(sampleResponse));
+        when(orderService.listOrders(eq(OrderStatus.PENDING), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(sampleResponse)));
 
         mockMvc.perform(get("/api/orders").param("status", "PENDING"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].status").value("PENDING"));
+                .andExpect(jsonPath("$.content[0].status").value("PENDING"));
     }
 
     @Test
-    void listOrders_emptyResult_returnsEmptyList() throws Exception {
-        when(orderService.listOrders(OrderStatus.DELIVERED)).thenReturn(List.of());
+    void listOrders_emptyResult_returnsEmptyPage() throws Exception {
+        when(orderService.listOrders(eq(OrderStatus.DELIVERED), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of()));
 
         mockMvc.perform(get("/api/orders").param("status", "DELIVERED"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$").isEmpty());
+                .andExpect(jsonPath("$.content").isEmpty());
     }
 
     // ─── PATCH /api/orders/{id}/status ─────────────────────────────────────────

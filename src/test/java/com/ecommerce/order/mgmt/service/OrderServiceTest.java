@@ -14,12 +14,16 @@ import com.ecommerce.order.mgmt.exception.ResourceNotFoundException;
 import com.ecommerce.order.mgmt.repository.CustomerRepository;
 import com.ecommerce.order.mgmt.repository.OrderRepository;
 import com.ecommerce.order.mgmt.repository.ProductRepository;
+import com.ecommerce.order.mgmt.security.SecurityService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Pageable;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -30,6 +34,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -38,6 +43,7 @@ class OrderServiceTest {
     @Mock private OrderRepository orderRepository;
     @Mock private CustomerRepository customerRepository;
     @Mock private ProductRepository productRepository;
+    @Mock private SecurityService securityService;
 
     @InjectMocks
     private OrderService orderService;
@@ -64,6 +70,10 @@ class OrderServiceTest {
                                 .unitPrice(new BigDecimal("49.99")).build()
                 )))
                 .build();
+
+        // Default: behave as ADMIN. Lenient because tests that don't reach the security
+        // check (e.g. cancelOrder, updateStatus) would otherwise trigger UnnecessaryStubbingException.
+        lenient().when(securityService.isCurrentUserAdmin()).thenReturn(true);
     }
 
     // ─── createOrder ────────────────────────────────────────────────────────────
@@ -111,6 +121,18 @@ class OrderServiceTest {
                 .hasMessageContaining("Product");
     }
 
+    @Test
+    void createOrder_userRoleWrongCustomer_throwsBusinessException() {
+        when(securityService.isCurrentUserAdmin()).thenReturn(false);
+        when(securityService.getCurrentUserEmail()).thenReturn(Optional.of("other@example.com"));
+        when(customerRepository.findById(1L)).thenReturn(Optional.of(customer));
+
+        assertThatThrownBy(() ->
+                orderService.createOrder(new CreateOrderRequest(1L, List.of(new OrderItemRequest(1L, 1))))
+        ).isInstanceOf(BusinessException.class)
+                .hasMessageContaining("own account");
+    }
+
     // ─── getOrder ───────────────────────────────────────────────────────────────
 
     @Test
@@ -133,29 +155,55 @@ class OrderServiceTest {
                 .hasMessageContaining("Order");
     }
 
+    @Test
+    void getOrder_userRoleOtherOrder_throwsResourceNotFoundException() {
+        when(securityService.isCurrentUserAdmin()).thenReturn(false);
+        when(securityService.getCurrentUserEmail()).thenReturn(Optional.of("other@example.com"));
+        when(orderRepository.findById(1L)).thenReturn(Optional.of(pendingOrder));
+
+        // Returns 404 instead of 403 to avoid leaking order existence
+        assertThatThrownBy(() -> orderService.getOrder(1L))
+                .isInstanceOf(ResourceNotFoundException.class);
+    }
+
     // ─── listOrders ─────────────────────────────────────────────────────────────
 
     @Test
-    void listOrders_noFilter_returnsAll() {
-        when(orderRepository.findAll()).thenReturn(List.of(pendingOrder));
+    void listOrders_adminNoFilter_returnsAll() {
+        when(orderRepository.findAll(any(Pageable.class))).thenReturn(new PageImpl<>(List.of(pendingOrder)));
 
-        List<OrderResponse> responses = orderService.listOrders(null);
+        Page<OrderResponse> page = orderService.listOrders(null, Pageable.unpaged());
 
-        assertThat(responses).hasSize(1);
-        verify(orderRepository).findAll();
-        verify(orderRepository, never()).findByStatus(any());
+        assertThat(page.getContent()).hasSize(1);
+        verify(orderRepository).findAll(any(Pageable.class));
+        verify(orderRepository, never()).findByStatus(any(), any(Pageable.class));
     }
 
     @Test
-    void listOrders_withStatusFilter_returnsFiltered() {
-        when(orderRepository.findByStatus(OrderStatus.PENDING)).thenReturn(List.of(pendingOrder));
+    void listOrders_adminWithStatusFilter_returnsFiltered() {
+        when(orderRepository.findByStatus(eq(OrderStatus.PENDING), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(pendingOrder)));
 
-        List<OrderResponse> responses = orderService.listOrders(OrderStatus.PENDING);
+        Page<OrderResponse> page = orderService.listOrders(OrderStatus.PENDING, Pageable.unpaged());
 
-        assertThat(responses).hasSize(1);
-        assertThat(responses.get(0).status()).isEqualTo(OrderStatus.PENDING);
-        verify(orderRepository).findByStatus(OrderStatus.PENDING);
-        verify(orderRepository, never()).findAll();
+        assertThat(page.getContent()).hasSize(1);
+        assertThat(page.getContent().get(0).status()).isEqualTo(OrderStatus.PENDING);
+        verify(orderRepository).findByStatus(eq(OrderStatus.PENDING), any(Pageable.class));
+        verify(orderRepository, never()).findAll(any(Pageable.class));
+    }
+
+    @Test
+    void listOrders_userRole_returnsOwnOrdersOnly() {
+        when(securityService.isCurrentUserAdmin()).thenReturn(false);
+        when(securityService.getCurrentUserEmail()).thenReturn(Optional.of("john@example.com"));
+        when(orderRepository.findByCustomerEmail(eq("john@example.com"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(pendingOrder)));
+
+        Page<OrderResponse> page = orderService.listOrders(null, Pageable.unpaged());
+
+        assertThat(page.getContent()).hasSize(1);
+        verify(orderRepository).findByCustomerEmail(eq("john@example.com"), any(Pageable.class));
+        verify(orderRepository, never()).findAll(any(Pageable.class));
     }
 
     // ─── updateStatus ───────────────────────────────────────────────────────────

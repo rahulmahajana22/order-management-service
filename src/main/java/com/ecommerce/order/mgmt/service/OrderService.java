@@ -3,6 +3,7 @@ package com.ecommerce.order.mgmt.service;
 import com.ecommerce.order.mgmt.dto.request.CreateOrderRequest;
 import com.ecommerce.order.mgmt.dto.request.UpdateStatusRequest;
 import com.ecommerce.order.mgmt.dto.response.OrderResponse;
+import com.ecommerce.order.mgmt.dto.response.OrderRevisionResponse;
 import com.ecommerce.order.mgmt.entity.Customer;
 import com.ecommerce.order.mgmt.entity.Order;
 import com.ecommerce.order.mgmt.entity.OrderItem;
@@ -13,12 +14,23 @@ import com.ecommerce.order.mgmt.exception.ResourceNotFoundException;
 import com.ecommerce.order.mgmt.repository.CustomerRepository;
 import com.ecommerce.order.mgmt.repository.OrderRepository;
 import com.ecommerce.order.mgmt.repository.ProductRepository;
+import com.ecommerce.order.mgmt.security.SecurityService;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
+import org.hibernate.envers.AuditReader;
+import org.hibernate.envers.AuditReaderFactory;
+import org.hibernate.envers.RevisionType;
+import org.hibernate.envers.query.AuditEntity;
+import org.hibernate.envers.DefaultRevisionEntity;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -29,6 +41,10 @@ public class OrderService {
     private final OrderRepository orderRepository;
     private final CustomerRepository customerRepository;
     private final ProductRepository productRepository;
+    private final SecurityService securityService;
+
+    @PersistenceContext
+    private EntityManager entityManager;
 
     // Valid manual status transitions
     private static final List<OrderStatus> MANUAL_PROGRESSION =
@@ -38,6 +54,15 @@ public class OrderService {
     public OrderResponse createOrder(CreateOrderRequest request) {
         Customer customer = customerRepository.findById(request.customerId())
                 .orElseThrow(() -> new ResourceNotFoundException("Customer", request.customerId()));
+
+        // USER role: can only place orders for their own customer account (matched by email)
+        if (!securityService.isCurrentUserAdmin()) {
+            String userEmail = securityService.getCurrentUserEmail()
+                    .orElseThrow(() -> new BusinessException("Cannot determine authenticated user email"));
+            if (!customer.getEmail().equals(userEmail)) {
+                throw new BusinessException("You can only place orders for your own account");
+            }
+        }
 
         Order order = Order.builder()
                 .customer(customer)
@@ -72,16 +97,71 @@ public class OrderService {
 
     @Transactional(readOnly = true)
     public OrderResponse getOrder(Long id) {
-        return OrderResponse.from(findById(id));
+        Order order = findById(id);
+
+        // USER role: can only view their own orders
+        if (!securityService.isCurrentUserAdmin()) {
+            String userEmail = securityService.getCurrentUserEmail()
+                    .orElseThrow(() -> new BusinessException("Cannot determine authenticated user email"));
+            if (!order.getCustomer().getEmail().equals(userEmail)) {
+                throw new ResourceNotFoundException("Order", id);
+            }
+        }
+
+        return OrderResponse.from(order);
     }
 
     @Transactional(readOnly = true)
-    public List<OrderResponse> listOrders(OrderStatus status) {
-        List<Order> orders = (status != null)
-                ? orderRepository.findByStatus(status)
-                : orderRepository.findAll();
+    public Page<OrderResponse> listOrders(OrderStatus status, Pageable pageable) {
+        if (securityService.isCurrentUserAdmin()) {
+            Page<Order> orders = (status != null)
+                    ? orderRepository.findByStatus(status, pageable)
+                    : orderRepository.findAll(pageable);
+            return orders.map(OrderResponse::from);
+        }
 
-        return orders.stream().map(OrderResponse::from).toList();
+        // USER: only their own orders, matched via customer email
+        String userEmail = securityService.getCurrentUserEmail()
+                .orElseThrow(() -> new BusinessException("Cannot determine authenticated user email"));
+        Page<Order> orders = (status != null)
+                ? orderRepository.findByStatusAndCustomerEmail(status, userEmail, pageable)
+                : orderRepository.findByCustomerEmail(userEmail, pageable);
+        return orders.map(OrderResponse::from);
+    }
+
+    @SuppressWarnings("unchecked")
+    @Transactional(readOnly = true)
+    public List<OrderRevisionResponse> getOrderRevisions(Long id) {
+        Order order = findById(id);
+
+        // USER role: can only view revisions for their own orders
+        if (!securityService.isCurrentUserAdmin()) {
+            String userEmail = securityService.getCurrentUserEmail()
+                    .orElseThrow(() -> new BusinessException("Cannot determine authenticated user email"));
+            if (!order.getCustomer().getEmail().equals(userEmail)) {
+                throw new ResourceNotFoundException("Order", id);
+            }
+        }
+
+        AuditReader reader = AuditReaderFactory.get(entityManager);
+        List<Object[]> rows = reader.createQuery()
+                .forRevisionsOfEntity(Order.class, false, true)
+                .add(AuditEntity.id().eq(id))
+                .getResultList();
+
+        return rows.stream()
+                .map(row -> {
+                    Order entity = (Order) row[0];
+                    DefaultRevisionEntity rev = (DefaultRevisionEntity) row[1];
+                    RevisionType type = (RevisionType) row[2];
+                    return new OrderRevisionResponse(
+                            rev.getId(),
+                            type.name(),
+                            Instant.ofEpochMilli(rev.getTimestamp()),
+                            entity != null ? OrderResponse.from(entity) : null
+                    );
+                })
+                .toList();
     }
 
     @Transactional(isolation = Isolation.REPEATABLE_READ)
