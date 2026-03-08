@@ -1,6 +1,6 @@
 # ⚡ Order Management Service — Production-Grade E-Commerce Backend
 
-> **A sophisticated, enterprise-ready order management system built with Spring Boot 3, Java 25, and cutting-edge frameworks. This project demonstrates advanced software engineering patterns, high-performance async logging, distributed rate limiting, transaction isolation, audit trails, JWT security, and comprehensive testing.**
+> **A sophisticated, enterprise-ready order management system built with Spring Boot 3, Java 25, and cutting-edge frameworks. This project demonstrates advanced software engineering patterns, high-performance async logging, in-process API rate limiting, READ_COMMITTED transaction isolation with JPA optimistic locking, audit trails, JWT security, and comprehensive testing.**
 
 ---
 
@@ -27,10 +27,10 @@
 This application is a **fully-featured order management backend** that processes e-commerce transactions with production-grade reliability. It demonstrates mastery of:
 
 - **Asynchronous, High-Performance Logging** using Log4j2 with LMAX Disruptor (0-copy ring buffer architecture)
-- **Distributed Rate Limiting** via Resilience4j to protect APIs from abuse
+- **In-Process API Rate Limiting** via Resilience4j — Semaphore-based, single-node, in-memory throttling to protect APIs from burst traffic
 - **Stateless JWT Authentication** with role-based access control (RBAC)
 - **Complete Audit Trails** via Hibernate Envers for compliance and forensics
-- **Advanced Transaction Isolation Levels** (SERIALIZABLE for background jobs, REPEATABLE_READ for services)
+- **READ_COMMITTED Isolation + JPA `@Version` Optimistic Locking** — prevents write-loss anomalies (lost updates) without heavyweight DB-level serialization; `OptimisticLockException` on concurrent write conflict
 - **Spring Data JPA Auditing** for automatic createdBy/lastModifiedBy tracking
 - **Declarative Input Validation** via Jakarta Validation annotations
 - **Global Exception Handling** with structured error responses
@@ -85,9 +85,22 @@ The system is designed for **scalability, security, maintainability**, and **com
 ## 🛠️ Technology Stack
 
 ### Core Framework
-- **Spring Boot 3.5.12** – Latest rapid application development
-- **Spring Framework 6** – Modern, non-blocking I/O support
-- **Java 25** (JDK/LTS) – Latest Java language features and performance improvements
+
+> **Spring Boot 3.x vs 2.x — Key Differences**
+>
+> | Area | Spring Boot 2.x | Spring Boot 3.x (used here) |
+> |------|----------------|------------------------------|
+> | **Java baseline** | Java 8+ | Java 17+ (required) |
+> | **Jakarta EE** | `javax.*` namespace | `jakarta.*` namespace (EE 9+) |
+> | **Spring Framework** | Spring 5 | Spring Framework 6 |
+> | **Native Images** | Limited / experimental | First-class GraalVM native image support |
+> | **Observability** | Spring Sleuth + Actuator | Unified Micrometer Tracing (OTLP-ready) |
+> | **Virtual Threads** | Not available | Supported (Spring Boot 3.2+, Project Loom) |
+> | **Security** | Spring Security 5 | Spring Security 6 (lambda DSL only) |
+
+- **Spring Boot 3.5.12** – Latest rapid application development with auto-configuration
+- **Spring Framework 6** – Ahead-of-time (AOT) processing, revised HTTP interfaces
+- **Java 25** – Latest Java language features and performance improvements
 
 ### Data Persistence & ORM
 - **Spring Data JPA** – Repository abstraction for data access
@@ -97,43 +110,72 @@ The system is designed for **scalability, security, maintainability**, and **com
 - **HikariCP** – High-performance JDBC connection pooling (default in Spring Boot)
 
 ### Security & Authentication
-- **Spring Security 6** – Industrial-strength authentication and authorization
-- **JWT (JJWT 0.12.6)** – JSON Web Tokens for stateless authentication
-- **JCIP** – Proper concurrent data structure handling
-- **Jakarta Security** – EE-standard security annotations
+
+What is actually wired in this project:
+
+- **Spring Security 6** (`SecurityConfig`) — HTTP security via lambda DSL: public auth endpoints, ADMIN-only PATCH/DELETE, stateless session policy (`SessionCreationPolicy.STATELESS`)
+- **`@EnableMethodSecurity`** — enables `@PreAuthorize` / `@PostAuthorize` on controller methods
+- **`JwtAuthenticationFilter`** — custom `OncePerRequestFilter`; extracts Bearer token, validates via JJWT, populates `SecurityContextHolder`
+- **JJWT 0.12.6** — token generation (`Jwts.builder()`), parsing (`Jwts.parserBuilder()`), HMAC-SHA256 signature validation
+- **`SecurityService`** — runtime helpers: `isCurrentUserAdmin()`, `getCurrentUserEmail()` from the security context
+- **Role enforcement** — `hasRole("ADMIN")` guards status-update and cancel endpoints; USER role is confined to their own orders (email-matched in service layer)
 
 ### API & Validation
-- **Spring Web (Spring MVC)** – RESTful API exposure
-- **Jakarta Validation (Bean Validation 3.x)** – Declarative input validation
-- **Jackson Databind** – JSON serialization with custom configurations
-- **Lombok 1.18.x** – Boilerplate reduction via annotations
+
+What is actually wired in this project:
+
+- **Spring Web (Spring MVC)** — `@RestController` + `@RequestMapping` on `OrderController` and `AuthController`; `@PathVariable`, `@RequestParam` for URL/query binding; `ResponseEntity<T>` for typed HTTP responses with explicit status codes
+- **`@RequestBody` + `@Valid`** — all write endpoints validate request DTOs via Bean Validation before reaching the service layer
+- **Jakarta Validation 3.x** — `@NotNull`, `@NotBlank`, `@Positive`, `@Size` on request record fields (`CreateOrderRequest`, `UpdateStatusRequest`, etc.)
+- **Jackson Databind** — automatic JSON ↔ Java serialization; `@JsonProperty` on DTOs where field naming differs
+- **`GlobalExceptionHandler` (`@RestControllerAdvice`)** — catches `ResourceNotFoundException`, `BusinessException`, `MethodArgumentNotValidException`; returns structured `ErrorResponse` with HTTP status + message
+- **`@WebMvcTest`** — used in `OrderControllerTest` and `AuthControllerTest` for isolated controller-layer testing without starting a full application context
+- **Lombok 1.18.x** — `@Builder`, `@Getter`, `@Setter`, `@RequiredArgsConstructor`, `@Slf4j` / `@Log4j2` across entities, services, and controllers
 
 ### Resilience & Rate Limiting
-- **Resilience4j 2.2.0** – Modern circuit breaker, rate limiter, retry logic
-  - **RateLimiter** – Token-bucket algorithm for request throttling
-  - Built-in metrics export for monitoring
+
+- **Resilience4j 2.2.0** (`resilience4j-spring-boot3`) — provides the `@RateLimiter` AOP decorator used on API endpoints
+  - **RateLimiter** — Semaphore-based algorithm; limits concurrent permitted calls within a refresh period (configured via `application.properties`)
+  - In-process and single-node — sufficient for a single-instance deployment; a distributed rate limiter (e.g. Redis-backed) would be needed for multi-instance deployments
+  - Circuit Breaker and Retry modules are available in the starter but are not configured or used in this project
 
 ### Logging & Diagnostics
+
 - **Log4j2 (Async via LMAX Disruptor)** – High-performance async logging framework
   - **LMAX Disruptor** – Wait-free, lock-free ring buffer for 0-copy event dispatch
   - **Asynchronous Appenders** – Non-blocking I/O, prevents thread starvation
   - **Structured Logging** – JSON layout support for log aggregation
-- **SLF4J** – Logging facade for vendor independence
-- **Spring Boot Actuator** – Built-in health checks and metrics
+  - `spring-boot-starter-logging` (SLF4J/Logback) is **explicitly excluded** from every starter in `pom.xml`; classes use `@Log4j2` directly (no SLF4J facade in the classpath)
+- **Spring Boot Actuator** – Built-in `/actuator/health` endpoint (used in Docker healthcheck)
 
 ### Testing
-- **JUnit 5 (Jupiter)** – Modern parameterized and extension-based testing
-- **Mockito 5** – Powerful mocking framework with ArgumentCaptor
-- **Spring Test** – @WebMvcTest, @DataJpaTest for isolated testing
-- **AssertJ** – Fluent, readable assertions
+
+Five test classes confirmed — all use JUnit 5 (Jupiter):
+
+| Test Class | Technique |
+|-----------|-----------|
+| `OrderServiceTest` | `@ExtendWith(MockitoExtension.class)`, `@Mock` repositories, `@InjectMocks` service |
+| `OrderControllerTest` | `@WebMvcTest(OrderController.class)`, `MockMvc`, `@MockBean` service |
+| `AuthControllerTest` | `@WebMvcTest(AuthController.class)`, MockMvc request/response assertion |
+| `OrderStatusSchedulerTest` | `@ExtendWith(MockitoExtension.class)`, verifies scheduler delegates to service |
+| `OrderManagementApplicationTests` | Spring context load smoke test (`@SpringBootTest`) |
+
+- **JUnit 5 (Jupiter)** – `@Test`, `@BeforeEach`, `@ExtendWith` from `org.junit.jupiter.api`
+- **Mockito 5** – `@Mock`, `@InjectMocks`, `ArgumentCaptor`, `verify()` for behaviour assertions
+- **Spring Test** – `@WebMvcTest` for isolated controller tests; `@SpringBootTest` for context load
+- **AssertJ** – Fluent `assertThat(…).isEqualTo(…)` / `hasSize(…)` assertions throughout
 
 ### Build & Dependency Management
 - **Apache Maven 3.8+** – Industry-standard project management
 - **Spring Boot Maven Plugin** – Simplified builds and executable JARs
 
 ### Development
+
 - **Git** – Version control
-- **Docker & Docker Compose** – Containerization (ready for deployment)
+- **Docker & Docker Compose** – Containerization via multi-stage `Dockerfile` (see [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml))
+  - Build stage: `eclipse-temurin:25-jdk-jammy`
+  - Runtime stage: `eclipse-temurin:25-jre-jammy` (minimal JRE, non-root `appuser`, no build tools)
+  - Note: Google Distroless does not yet publish a Java 25 image (current LTS is Java 21); JRE-jammy is the equivalent minimal image for Java 25
 
 ---
 
@@ -158,12 +200,14 @@ This **activates the LMAX Disruptor** – a wait-free, lock-free ring buffer tha
 
 #### Example Usage
 ```java
-@Slf4j
+@Log4j2  // Direct Log4j2 — SLF4J is excluded from all starters in this project
 @Component
 public class OrderStatusScheduler {
     public void processPendingOrders() {
-        log.info("Scheduler: advanced {} PENDING order(s) to PROCESSING.", pendingOrders.size());
-        // This log write happens asynchronously; thread returns immediately
+        log.debug("Scheduler: checking for PENDING orders...");
+        orderService.processPendingOrders();
+        // log.info inside processPendingOrders() fires asynchronously via Disruptor ring buffer
+        // the calling thread returns immediately; disk I/O happens on the logger thread
     }
 }
 ```
@@ -175,9 +219,9 @@ public class OrderStatusScheduler {
 
 ---
 
-### 2. **Distributed Rate Limiting with Resilience4j**
+### 2. **In-Process API Rate Limiting with Resilience4j**
 
-**Rate Limiting** protects APIs from abuse and ensures fair resource allocation. This implementation uses **Resilience4j's token-bucket algorithm**.
+**Rate Limiting** protects APIs from abuse and ensures fair resource allocation. This implementation uses **Resilience4j's Semaphore-based `RateLimiter`** — in-process and single-node (not distributed).
 
 #### Configuration
 ```properties
@@ -445,57 +489,83 @@ REPEATABLE_READ  | ✗          | ✗                   | ✓            | Bette
 SERIALIZABLE     | ✗          | ✗                   | ✗            | Slowest
 ```
 
-#### Implementation in Service Layer
+#### `@Version` — Optimistic Locking on the Order Entity
+
+```java
+@Entity
+@Table(name = "orders")
+public class Order {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Version                  // Hibernate manages this column automatically
+    private Long version;     // Incremented on every UPDATE; checked before writing
+
+    // ... other fields
+}
+```
+
+Hibernate appends `WHERE id = ? AND version = ?` to every `UPDATE`. If another transaction has already incremented the version, Hibernate throws `OptimisticLockException` — the caller retries or surfaces a 409 Conflict to the client.
+
+#### Implementation in Service Layer (READ_COMMITTED)
+
 ```java
 @Service
 public class OrderService {
-    
-    @Transactional(isolation = Isolation.REPEATABLE_READ)
-    public OrderResponse createOrder(CreateOrderRequest request) {
-        // Prevents non-repeatable reads during order creation
-        // Another transaction won't see partial updates
-        Customer customer = customerRepository.findById(request.customerId())
-            .orElseThrow(() -> new ResourceNotFoundException("Customer", request.customerId()));
-        
-        Order order = Order.builder()
-            .customer(customer)
-            .status(OrderStatus.PENDING)
-            .totalAmount(calculateTotal(request.items()))
-            .items(request.items().stream()
-                .map(item -> createOrderItem(item))
-                .collect(Collectors.toList()))
-            .build();
-        
+
+    // READ_COMMITTED: each statement sees the latest committed data.
+    // @Version handles write-loss protection at the ORM level — no need for
+    // REPEATABLE_READ or SERIALIZABLE and their associated lock contention.
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public OrderResponse updateStatus(Long id, UpdateStatusRequest request) {
+        Order order = findById(id);  // reads latest committed row
+        order.setStatus(request.status());
         return OrderResponse.from(orderRepository.save(order));
+        // save() → UPDATE orders SET status=?, version=? WHERE id=? AND version=?
+        // If version mismatch → OptimisticLockException
     }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public OrderResponse cancelOrder(Long id) { /* same pattern */ }
 }
 ```
 
-#### Implementation in Scheduled Tasks
+#### Implementation in Scheduler — Separated from Transaction Boundary
+
 ```java
+// OrderStatusScheduler.java  — scheduling concern only, no @Transactional
 @Component
 public class OrderStatusScheduler {
-    
+
+    private final OrderService orderService;
+
     @Scheduled(fixedRateString = "${app.scheduler.order-processing-rate}")
-    @Transactional(isolation = Isolation.SERIALIZABLE)  // Strictest isolation for batch
     public void processPendingOrders() {
-        // SERIALIZABLE isolation prevents concurrent scheduler runs from interfering
-        // Only one scheduler instance can execute this block at a time
-        List<Order> pendingOrders = orderRepository.findByStatus(OrderStatus.PENDING);
-        
-        pendingOrders.forEach(order -> order.setStatus(OrderStatus.PROCESSING));
-        orderRepository.saveAll(pendingOrders);
-        
-        log.info("Scheduler: advanced {} PENDING order(s) to PROCESSING.", pendingOrders.size());
+        log.debug("Scheduler: checking for PENDING orders...");
+        orderService.processPendingOrders();  // enters service CGLIB proxy → txn starts here
     }
+}
+
+// OrderService.java — transactional concern
+@Transactional(isolation = Isolation.READ_COMMITTED)
+public void processPendingOrders() {
+    List<Order> pendingOrders = orderRepository.findByStatus(OrderStatus.PENDING);
+    if (pendingOrders.isEmpty()) return;
+    pendingOrders.forEach(order -> order.setStatus(OrderStatus.PROCESSING));
+    orderRepository.saveAll(pendingOrders);
+    log.info("Advanced {} PENDING order(s) to PROCESSING.", pendingOrders.size());
 }
 ```
 
+> **Why separation matters:** Spring's task scheduler invokes `processPendingOrders()` through the scheduler's CGLIB proxy, so `@Transactional` on the scheduler method *does* fire. However, mixing `@Scheduled` and `@Transactional` on the same method couples two unrelated concerns and means any self-invocation inside the scheduler would bypass the proxy. The correct pattern is delegation to a transactional service method.
+
 **Why This Matters:**
-- **Prevents anomalies** – lost updates, dirty reads, phantom reads
-- **Balances performance & safety** – higher isolation = more locks = higher latency
-- **Batch operations require stricter isolation** – prevent race conditions
-- **Critical for financial transactions** – correctness over speed
+- **Optimistic locking beats pessimistic locking** — no shared DB-level range locks; conflicts are rare and handled at application level
+- **READ_COMMITTED is sufficient** — `@Version` handles write-loss; removing `REPEATABLE_READ` / `SERIALIZABLE` reduces lock contention across the pool
+- **`OptimisticLockException` is explicit** — fails fast and visibly; easier to handle than silent overwrites
+- **Scheduler/service separation** — each layer has one responsibility; service is independently testable
 
 ---
 
@@ -762,7 +832,7 @@ public ResponseEntity<Page<OrderResponse>> listOrders(
 @Service
 public class OrderService {
     
-    @Transactional(isolation = Isolation.REPEATABLE_READ, readOnly = true)
+    @Transactional(readOnly = true)
     public Page<OrderResponse> listOrders(OrderStatus status, Pageable pageable) {
         Specification<Order> spec = (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
@@ -811,34 +881,37 @@ GET /api/orders?status=PROCESSING&page=0&size=25&sort=createdAt,desc
 
 ### 11. **Scheduled Background Tasks with Proper Transaction Boundaries**
 
-Background processing without blocking API threads.
+Background processing without blocking API threads. The scheduler and transaction concerns are **deliberately separated** into two classes.
 
-#### Implementation
+#### Scheduler — Scheduling Concern Only
 ```java
-@Component
 @Slf4j
+@Component
+@RequiredArgsConstructor
 public class OrderStatusScheduler {
-    
-    private final OrderRepository orderRepository;
-    
-    @Scheduled(fixedRateString = "${app.scheduler.order-processing-rate}")  // 5 minutes
-    @Transactional(isolation = Isolation.SERIALIZABLE)  // Strict isolation for batch jobs
+
+    private final OrderService orderService;  // delegates all business logic
+
+    @Scheduled(fixedRateString = "${app.scheduler.order-processing-rate}")
     public void processPendingOrders() {
-        log.debug("Scheduler: starting to process pending orders...");
-        
-        List<Order> pendingOrders = orderRepository.findByStatus(OrderStatus.PENDING);
-        
-        if (pendingOrders.isEmpty()) {
-            log.debug("Scheduler: no PENDING orders to process.");
-            return;
-        }
-        
-        // Advance all pending orders to processing
-        pendingOrders.forEach(order -> order.setStatus(OrderStatus.PROCESSING));
-        orderRepository.saveAll(pendingOrders);
-        
-        log.info("Scheduler: advanced {} PENDING order(s) to PROCESSING.", pendingOrders.size());
+        log.debug("Scheduler: checking for PENDING orders...");
+        orderService.processPendingOrders();  // transaction begins here, inside service proxy
     }
+}
+```
+
+#### Service — Transactional Concern
+```java
+// In OrderService.java
+@Transactional(isolation = Isolation.READ_COMMITTED)
+public void processPendingOrders() {
+    List<Order> pendingOrders = orderRepository.findByStatus(OrderStatus.PENDING);
+    if (pendingOrders.isEmpty()) return;
+    pendingOrders.forEach(order -> order.setStatus(OrderStatus.PROCESSING));
+    orderRepository.saveAll(pendingOrders);
+    // Hibernate: UPDATE orders SET status='PROCESSING', version=version+1
+    //            WHERE id=? AND version=?  → OptimisticLockException on race
+    log.info("Advanced {} PENDING order(s) to PROCESSING.", pendingOrders.size());
 }
 ```
 
@@ -866,10 +939,10 @@ spring.task.scheduling.enabled=true
 ```
 
 **Why This Matters:**
-- **Non-blocking** – background jobs don't block API requests
-- **Transactional safety** – all-or-nothing updates
-- **SERIALIZABLE isolation** – prevent scheduler races in distributed systems
-- **Cloud-native** – works perfectly in Kubernetes, load-balanced scenarios
+- **Non-blocking** — background jobs don't block API requests; `@Scheduled` runs on a dedicated thread pool
+- **Transactional safety** — all-or-nothing: if any order save fails the entire batch rolls back
+- **Correct proxy behaviour** — `@Transactional` on a service method is guaranteed to go through the Spring CGLIB proxy; mixing it with `@Scheduled` on the same method risks self-invocation proxy bypass
+- **READ_COMMITTED + `@Version`** — optimistic locking prevents concurrent scheduler executions from silently overwriting each other at low DB-lock cost
 
 ---
 
@@ -1118,7 +1191,7 @@ POST /api/orders
 Authorization: Bearer <token>
 Content-Type: application/json
 Rate-Limited: 3 req/30s
-Isolation: REPEATABLE_READ
+Isolation: READ_COMMITTED (+ @Version optimistic locking)
 Audited: Yes (createdBy, createdAt)
 
 {
@@ -1154,7 +1227,7 @@ Response: 201 Created
 GET /api/orders/{id}
 Authorization: Bearer <token>
 Rate-Limited: 3 req/30s
-Isolation: REPEATABLE_READ (readOnly=true)
+Isolation: READ_COMMITTED (readOnly=true)
 
 Response: 200 OK
 {
@@ -1200,7 +1273,7 @@ PATCH /api/orders/{id}/status
 Authorization: Bearer <token>
 Content-Type: application/json
 Rate-Limited: 3 req/30s
-Isolation: REPEATABLE_READ
+Isolation: READ_COMMITTED (+ @Version optimistic locking)
 Audited: Yes
 
 {
@@ -1221,7 +1294,7 @@ Response: 200 OK
 DELETE /api/orders/{id}
 Authorization: Bearer <token>
 Rate-Limited: 3 req/30s
-Isolation: REPEATABLE_READ
+Isolation: READ_COMMITTED (+ @Version optimistic locking)
 Audited: Yes
 
 Response: 200 OK
@@ -1376,7 +1449,7 @@ Signature: (HMAC HS256 with server secret)
 | **Auditing** | Hibernate Envers for complete revision history |
 | **Timestamps** | @CreatedDate, @LastModifiedDate (UTC) |
 | **User Tracking** | @CreatedBy, @LastModifiedBy (automatic) |
-| **Isolation** | REPEATABLE_READ (service), SERIALIZABLE (scheduler) |
+| **Isolation** | READ_COMMITTED + JPA `@Version` optimistic locking (all write operations) |
 
 ### H2 Console Access
 ```
@@ -1392,30 +1465,38 @@ Password: (value of H2_DB_PASSWORD env var)
 
 ### Concurrency Patterns
 
-#### Service Layer (REPEATABLE_READ)
+#### Optimistic Locking (`@Version` on Order entity)
+
 ```
-Transaction 1                    Transaction 2
-─────────────────────────────────────────────
-Read Order (version 1)
-                                 Begin transaction
-                                 Modify Order
-                                 Commit
-Read Order again (still v1) ← Prevents non-repeatable reads
-Commit
+Thread 1 (API request)           Thread 2 (API request)
+────────────────────────────────────────────────────────
+Read Order  (id=42, version=3)
+                                 Read Order  (id=42, version=3)
+                                 Modify status → SHIPPED
+                                 UPDATE ... WHERE id=42 AND version=3
+                                 → Success: version now = 4
+Modify status → CANCELLED
+UPDATE ... WHERE id=42 AND version=3
+→ 0 rows affected (version=4 in DB)
+→ OptimisticLockException thrown ← caller retries or returns 409
 ```
 
-#### Scheduler (SERIALIZABLE)
+No DB-level range locks held; conflicts are rare and detected at write time, not at read time.
+
+#### Scheduler — Delegation to Transactional Service
+
 ```
-Scheduler Thread 1               Scheduler Thread 2
-──────────────────────────────────────────────────
-Acquire SERIALIZABLE lock
-Query PENDING orders
-Process orders
-Save updates
-Release lock
-                                 Waits for lock
-                                 Executes (no conflicts)
-                                 Releases lock
+Scheduler thread                 Spring CGLIB Proxy (OrderService)
+──────────────────────────────────────────────────────────────────
+@Scheduled fires
+Calls orderService.processPendingOrders()
+  ──────────────────────────────→ BEGIN READ_COMMITTED transaction
+                                  SELECT * FROM orders WHERE status='PENDING'
+                                  UPDATE orders SET status='PROCESSING',
+                                         version=version+1 WHERE id=? AND version=?
+                                  COMMIT
+  ←──────────────────────────────
+Log "Advanced N orders"
 ```
 
 ### Connection Pooling
@@ -1456,24 +1537,27 @@ Async Logging (Disruptor):  Application thread → Ring Buffer (lock-free) → C
 
 ```
 Every 5 minutes (configurable):
-┌─────────────────────────────────────┐
-│ 1. BEGIN SERIALIZABLE TRANSACTION    │
-├─────────────────────────────────────┤
-│ 2. Query all PENDING orders         │
-│    SELECT * FROM orders             │
-│    WHERE status = 'PENDING'         │
-├─────────────────────────────────────┤
-│ 3. Advance to PROCESSING            │
-│    UPDATE orders                    │
-│    SET status = 'PROCESSING'        │
-│    WHERE status = 'PENDING'         │
-├─────────────────────────────────────┤
-│ 4. COMMIT (all-or-nothing)          │
-│    Write to audit trail (Envers)    │
-├─────────────────────────────────────┤
-│ 5. Log: "Advanced X orders"         │
-│    (async via Disruptor)            │
-└─────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│ 1. @Scheduled fires on Spring task-scheduler thread     │
+│    OrderStatusScheduler.processPendingOrders()          │
+│    → delegates to OrderService via CGLIB proxy          │
+├─────────────────────────────────────────────────────────┤
+│ 2. BEGIN READ_COMMITTED TRANSACTION (in OrderService)   │
+├─────────────────────────────────────────────────────────┤
+│ 3. Query all PENDING orders                             │
+│    SELECT * FROM orders WHERE status = 'PENDING'        │
+├─────────────────────────────────────────────────────────┤
+│ 4. Advance to PROCESSING (optimistic locking active)    │
+│    UPDATE orders                                        │
+│    SET status = 'PROCESSING', version = version + 1    │
+│    WHERE id = ? AND version = ?   ← @Version check     │
+├─────────────────────────────────────────────────────────┤
+│ 5. COMMIT (all-or-nothing)                              │
+│    Write to audit trail (Envers)                        │
+├─────────────────────────────────────────────────────────┤
+│ 6. Log: "Advanced X orders"                             │
+│    (async via LMAX Disruptor)                           │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ### Configuration
@@ -1597,18 +1681,33 @@ SEED_USER_PASSWORD=SecureUserPassword!
 
 ### Docker Deployment
 
+A multi-stage [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml) are included in the project root.
+
 ```bash
-# Build Docker image
+# Build image and start via Compose (recommended)
+docker compose up --build -d
+
+# Or build + run manually
 docker build -t order-management:latest .
 
-# Run container
 docker run -p 8080:8080 \
-  -e JWT_SECRET=<secure-key> \
-  -e DATABASE_URL=postgresql://host:5432/orderdb \
+  -e JWT_SECRET=your-32-char-secret-here \
+  -e H2_DB_USERNAME=admin \
+  -e H2_DB_PASSWORD=secret \
+  -v order_data:/app/data \
   order-management:latest
 
-# Docker Compose (with PostgreSQL)
-docker-compose up -d
+# Stop
+docker compose down
+```
+
+The H2 file-based database is persisted in a named Docker volume (`h2-data`) so data survives container restarts. Override any default environment variable by creating a `.env` file in the project root:
+
+```properties
+JWT_SECRET=your-very-long-production-secret-here
+H2_DB_USERNAME=admin
+H2_DB_PASSWORD=changeme
+APP_SCHEDULER_ORDER_PROCESSING_RATE=60000
 ```
 
 ---
@@ -1651,16 +1750,19 @@ docker-compose up -d
 
 **Decision:** Async with Disruptor for high-performance systems.
 
-### 4. **SERIALIZABLE for Scheduler vs. REPEATABLE_READ**
+### 4. **READ_COMMITTED + `@Version` Optimistic Locking vs. Pessimistic Locking**
 
-| Aspect | SERIALIZABLE | REPEATABLE_READ |
-|--------|-------------|-----------------|
-| **Safety** | ✅ Perfect isolation | ⚠️ Phantom reads possible |
-| **Concurrency** | ❌ Low | ✅ Higher |
-| **Batch Jobs** | ✅ Prevents races | ❌ Race conditions |
-| **Real-time Apps** | ❌ Lock contention | ✅ Better throughput |
+| Aspect | READ_COMMITTED + @Version (used) | REPEATABLE_READ / SERIALIZABLE |
+|--------|----------------------------------|-------------------------------|
+| **Lost update protection** | ✅ `OptimisticLockException` on conflict | ✅ DB-level locks prevent it |
+| **Lock contention** | ✅ None held between read and write | ❌ Shared/range locks held for duration |
+| **Throughput** | ✅ High (locks only at write time) | ❌ Lower (locks block concurrent reads) |
+| **Conflict detection** | Application level — explicit exception | Database level — silent blocking |
+| **Phantom reads** | ⚠️ Possible (acceptable for this domain) | ✅ Prevented |
+| **Deadlock risk** | ✅ None | ❌ Possible under high concurrency |
+| **Scheduler safety** | ✅ Delegation to service proxy ensures correct tx boundary | ✅ Direct tx on method (but couples concerns) |
 
-**Decision:** SERIALIZABLE for batch scheduler; REPEATABLE_READ for API layer.
+**Decision:** READ_COMMITTED + `@Version` for all write operations. Optimistic locking matches the access pattern (conflicts are rare; no long-held DB locks needed). The scheduler delegates to a `@Transactional` service method — clean separation of concerns and correct CGLIB proxy behaviour.
 
 ### 5. **Lazy Loading vs. Eager Loading**
 

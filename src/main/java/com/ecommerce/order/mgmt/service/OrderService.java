@@ -18,6 +18,8 @@ import com.ecommerce.order.mgmt.security.SecurityService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.log4j.Log4j2;
+
 import org.hibernate.envers.AuditReader;
 import org.hibernate.envers.AuditReaderFactory;
 import org.hibernate.envers.RevisionType;
@@ -36,6 +38,7 @@ import java.util.List;
 
 @Service
 @RequiredArgsConstructor
+@Log4j2
 public class OrderService {
 
     private final OrderRepository orderRepository;
@@ -164,7 +167,7 @@ public class OrderService {
                 .toList();
     }
 
-    @Transactional(isolation = Isolation.REPEATABLE_READ)
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public OrderResponse updateStatus(Long id, UpdateStatusRequest request) {
         Order order = findById(id);
         OrderStatus newStatus = request.status();
@@ -194,7 +197,7 @@ public class OrderService {
         return OrderResponse.from(orderRepository.save(order));
     }
 
-    @Transactional(isolation = Isolation.REPEATABLE_READ)
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public OrderResponse cancelOrder(Long id) {
         Order order = findById(id);
 
@@ -205,6 +208,15 @@ public class OrderService {
 
         order.setStatus(OrderStatus.CANCELLED);
         return OrderResponse.from(orderRepository.save(order));
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public void processPendingOrders() {
+        List<Order> pendingOrders = orderRepository.findByStatus(OrderStatus.PENDING);
+        if (pendingOrders.isEmpty()) return;
+        pendingOrders.forEach(order -> order.setStatus(OrderStatus.PROCESSING));
+        orderRepository.saveAll(pendingOrders);
+        log.info("Advanced {} PENDING order(s) to PROCESSING.", pendingOrders.size());
     }
 
     private Order findById(Long id) {

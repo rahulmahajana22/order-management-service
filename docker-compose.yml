@@ -1,0 +1,31 @@
+services:
+  order-management:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: order-management:latest
+    container_name: order-management-app
+    ports:
+      - "8080:8080"
+    environment:
+      # H2 console credentials — override via .env or shell environment
+      H2_DB_USERNAME: ${H2_DB_USERNAME:-admin}
+      H2_DB_PASSWORD: ${H2_DB_PASSWORD:-secret}
+      # JWT signing secret — MUST be overridden in production (min 32 chars)
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-must-be-32-chars}
+      # Scheduler interval in milliseconds (default: 5 minutes)
+      APP_SCHEDULER_ORDER_PROCESSING_RATE: ${APP_SCHEDULER_ORDER_PROCESSING_RATE:-300000}
+    volumes:
+      # Persist the H2 file-based database across container restarts
+      - h2-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  h2-data:
+    driver: local
